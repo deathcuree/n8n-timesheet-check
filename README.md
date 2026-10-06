@@ -29,6 +29,8 @@ Workdays are Monday to Friday in the tracker's timezone (Asia/Manila), minus any
 
 The main workflow is `workflows/timesheet-check.json`. It runs at 8:00 every morning (Asia/Manila) and can also be started by hand.
 
+![The main workflow in n8n](docs/screenshots/workflow-timesheet-check.png)
+
 1. Reads the run history from a Google Sheet and works out which days to check.
 2. Logs in to the time tracker with a read-only account, and stops if the account is anything stronger.
 3. Reads time logs, open entries, PTO requests and users, page by page. It only ever sends GET requests after the login.
@@ -43,6 +45,10 @@ Two small workflows make failures visible.
 
 - **`workflows/failure-alert.json`** starts whenever a scheduled run of either other workflow fails. It emails the workflow name, the step that failed and the error message. It leaves out the error's details and stack trace, because those can hold data from the time tracker.
 - **`workflows/heartbeat.json`** runs at 10:00 every day and emails a warning if the newest row in the run history is more than 36 hours old, or if there is none.
+
+![The failure-alert workflow in n8n](docs/screenshots/workflow-failure-alert.png)
+
+![The heartbeat workflow in n8n](docs/screenshots/workflow-heartbeat.png)
 
 A failed run records nothing, so the next run covers the same days again without writing anything twice.
 
