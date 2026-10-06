@@ -2,9 +2,9 @@
 
 An [n8n](https://n8n.io) workflow that reads a staff time tracker every morning and reports timesheet problems, so they are caught before they reach a payroll report.
 
-> **Status:** built and tested end to end against a local copy of the time tracker, with real Google Sheets, Gmail and Gemini accounts. It is not yet running on a daily schedule.
+> **Status:** self-hosted locally and running on its daily schedule since 6 October 2026. Built and tested end to end against a local copy of the time tracker, with real Google Sheets, Gmail and Gemini accounts.
 
-It runs on the author's own computer with a local n8n, not on hosted infrastructure. If the computer is off at 8:00, that run is skipped and the next one catches up.
+n8n is self-hosted on the author's own computer, not on a server. It starts at login and keeps running in the background. If the computer is off or asleep at 8:00, that run is skipped and the next one catches up.
 
 ![The summary email](docs/screenshots/summary-email.png)
 
@@ -48,7 +48,7 @@ A failed run records nothing, so the next run covers the same days again without
 
 Two limits to know about:
 
-- n8n only starts the failure-alert workflow when that workflow is published. `npm run import` publishes it.
+- n8n only starts a workflow on its trigger when that workflow is published. `npm run import` publishes the failure-alert workflow; the other two are published by hand (see Setup).
 - The heartbeat runs inside the same n8n. While n8n is not running it cannot warn anyone; it reports the gap at the first 10:00 after n8n is back.
 
 ## What makes it safe to run unattended
@@ -129,7 +129,7 @@ Copy `.env.example` to `.env` and fill it in. `.env` is never committed.
 npm run n8n
 ```
 
-This loads `.env`, lets the workflow read those settings, and starts n8n at `http://localhost:5678`. Keep the terminal open; closing it stops n8n and the schedule.
+This loads `.env`, lets the workflow read those settings, and starts n8n at `http://localhost:5678`. Keep the terminal open; closing it stops n8n and the schedule. Once everything is set up, step 6 replaces this with a background service.
 
 ### 4. The Google Sheet
 
@@ -151,6 +151,28 @@ npm run n8n
 
 Open "Timesheet check" in n8n and run it once by hand. When you are happy with the result, publish "Timesheet check" and "Timesheet check - heartbeat" so they run on their schedules. Importing again switches them off, so publish them again afterwards.
 
+### 6. Keep n8n running (macOS)
+
+Stop n8n in the terminal (Ctrl+C), then:
+
+```bash
+npm run autostart
+```
+
+This installs a launch agent that starts n8n now and at every login, and restarts it if it exits, so no terminal has to stay open. Output goes to `~/Library/Logs/n8n-timesheet-check.log`. Run it again after changing node versions or moving this folder.
+
+To stop n8n and stop it starting at login:
+
+```bash
+npm run autostart:remove
+```
+
+Things to know while n8n runs in the background:
+
+- **Do not also run `npm run n8n` in a terminal.** Both copies would try to use port 5678, and the second one fails.
+- **Stop it before importing.** Run `npm run autostart:remove`, then `npm run import`, then `npm run autostart`. Importing switches "Timesheet check" and "Timesheet check - heartbeat" off, so publish them again each time.
+- **A computer that is asleep runs nothing.** If it is asleep or off at 8:00, that run is skipped, and the next run catches up on the days in between (up to 7).
+
 ### Changing the logic or settings
 
 Edit the files in `src/` (or the settings in `scripts/build-workflows.js`), then:
@@ -158,5 +180,9 @@ Edit the files in `src/` (or the settings in `scripts/build-workflows.js`), then
 ```bash
 npm test
 npm run build
+npm run autostart:remove   # if n8n runs in the background
 npm run import
+npm run autostart          # or "npm run n8n"
 ```
+
+Then publish "Timesheet check" and "Timesheet check - heartbeat" again.

@@ -7,6 +7,8 @@
     "test": "node --test \"test/*.test.js\"",
     "build": "node scripts/build-workflows.js",
     "import": "node scripts/import-workflows.js",
+    "autostart": "node scripts/autostart.js",
+    "autostart:remove": "node scripts/autostart.js remove",
     "n8n": "set -a && . ./.env && set +a && N8N_BLOCK_ENV_ACCESS_IN_NODE=false GENERIC_TIMEZONE=Asia/Manila npx -y n8n@2.41.6"
   },
   "engines": {
