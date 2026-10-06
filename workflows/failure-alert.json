@@ -1,0 +1,90 @@
+{
+  "id": "timesheetCheckFailureAlert",
+  "name": "Timesheet check - failure alert",
+  "nodes": [
+    {
+      "id": "f97019ef-5415-4925-a716-a16470e2e5e3",
+      "position": [
+        0,
+        0
+      ],
+      "name": "When a run fails",
+      "type": "n8n-nodes-base.errorTrigger",
+      "typeVersion": 1,
+      "parameters": {}
+    },
+    {
+      "id": "43723a52-eca4-435b-a3bb-2189c26a0816",
+      "position": [
+        240,
+        0
+      ],
+      "name": "Build failure alert",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "parameters": {
+        "jsCode": "// Builds the two alert emails: one when a run fails, one when no run has been\n// recorded for too long.\n//\n// This file has no imports so the same text can be pasted into an n8n Code\n// node unchanged.\n\nconst HEARTBEAT_DEFAULTS = {\n  // Alert when the newest recorded run is older than this.\n  maxSilentHours: 36,\n};\n\nconst MAX_ERROR_LENGTH = 300;\n\n// The id of the daily check, whose failed runs are covered again by the next run.\nconst DAILY_CHECK_ID = 'timesheetCheck';\n\nfunction escapeAlertHtml(text) {\n  return String(text)\n    .replace(/&/g, '&amp;')\n    .replace(/</g, '&lt;')\n    .replace(/>/g, '&gt;')\n    .replace(/\"/g, '&quot;');\n}\n\nfunction shorten(text) {\n  const clean = String(text).replace(/\\s+/g, ' ').trim();\n  return clean.length > MAX_ERROR_LENGTH ? `${clean.slice(0, MAX_ERROR_LENGTH)}…` : clean;\n}\n\n/**\n * @param data  what n8n passes to an error workflow: { execution, workflow },\n *              or { trigger, workflow } when the workflow could not start.\n * @returns     { subject, html }. Only the workflow name, the node name and\n *              the error message are used. The error's description and stack\n *              are left out, because they can hold response data.\n */\nfunction buildFailureAlert(data) {\n  const workflowName = data?.workflow?.name || 'unknown workflow';\n  const execution = data?.execution;\n  const couldNotStart = !execution && Boolean(data?.trigger);\n  const error = (couldNotStart ? data.trigger.error : execution?.error) ?? {};\n  const message = error.message ? shorten(error.message) : 'unknown error';\n  const nodeName = couldNotStart ? null : execution?.lastNodeExecuted || 'unknown step';\n\n  const subject = couldNotStart\n    ? `FAILED: ${workflowName} could not start`\n    : `FAILED: ${workflowName} at \"${nodeName}\"`;\n\n  const lines = [\n    `<p><b>${escapeAlertHtml(workflowName)}</b> ${couldNotStart ? 'could not start.' : 'failed.'}</p>`,\n    '<table style=\"border-collapse:collapse\">',\n    nodeName ? `<tr><td style=\"padding:2px 12px 2px 0\">Step</td><td><b>${escapeAlertHtml(nodeName)}</b></td></tr>` : '',\n    `<tr><td style=\"padding:2px 12px 2px 0\">Error</td><td>${escapeAlertHtml(message)}</td></tr>`,\n    execution?.id ? `<tr><td style=\"padding:2px 12px 2px 0\">Run</td><td>${escapeAlertHtml(execution.id)}</td></tr>` : '',\n    '</table>',\n    data?.workflow?.id === DAILY_CHECK_ID\n      ? '<p>No run was recorded, so the next run will cover the same days again. Nothing is written twice.</p>'\n      : '',\n    '<p>Open the run in n8n to see the details.</p>',\n  ];\n\n  return { subject, html: lines.filter(Boolean).join('\\n') };\n}\n\n/**\n * @param runRows   the rows of the run-history tab, each with a `run_at` time.\n * @param now       the moment of the check.\n * @param settings  overrides for HEARTBEAT_DEFAULTS.\n * @returns         { alert, lastRunAt, subject, html }; subject and html are\n *                  only set when alert is true.\n */\nfunction checkHeartbeat(runRows, now, settings) {\n  const config = { ...HEARTBEAT_DEFAULTS, ...settings };\n  const nowMs = new Date(now).getTime();\n\n  let lastRunAt = null;\n  let lastRunMs = -Infinity;\n  for (const row of runRows) {\n    if (typeof row.run_at !== 'string') continue;\n    const ms = Date.parse(row.run_at);\n    if (Number.isNaN(ms) || ms <= lastRunMs) continue;\n    lastRunMs = ms;\n    lastRunAt = row.run_at;\n  }\n\n  if (lastRunAt === null) {\n    return {\n      alert: true,\n      lastRunAt,\n      subject: 'Timesheet check: no run has ever been recorded',\n      html:\n        '<p>The run history is empty, so the timesheet check has never finished a run.</p>' +\n        '<p>Check that n8n is running and the workflow is switched on.</p>',\n    };\n  }\n\n  const silentMs = nowMs - lastRunMs;\n  if (silentMs <= config.maxSilentHours * 60 * 60 * 1000) {\n    return { alert: false, lastRunAt };\n  }\n\n  const hours = Math.round(silentMs / (60 * 60 * 1000));\n  const hoursText = `${hours} ${hours === 1 ? 'hour' : 'hours'}`;\n  return {\n    alert: true,\n    lastRunAt,\n    subject: `Timesheet check: no run for ${hoursText}`,\n    html:\n      `<p>The last recorded run of the timesheet check was at <b>${escapeAlertHtml(lastRunAt)}</b>, ` +\n      `about ${hoursText} ago. The limit is ${config.maxSilentHours} hours.</p>` +\n      '<p>Check that n8n is running and the workflow is switched on. ' +\n      'The next successful run will catch up on the missed days, up to 7.</p>',\n  };\n}\n\n// Lets the tests load this file; has no effect inside an n8n Code node.\nif (typeof module !== 'undefined' && module.exports) {\n  module.exports = { buildFailureAlert, checkHeartbeat, HEARTBEAT_DEFAULTS };\n}\n\n// ---- n8n glue: reads this node's input and returns its output ----\nreturn [{ json: buildFailureAlert($input.first().json) }];\n"
+      }
+    },
+    {
+      "id": "3419197e-a147-41e1-a5c8-a6edea35a174",
+      "position": [
+        480,
+        0
+      ],
+      "name": "Send failure alert",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.2,
+      "parameters": {
+        "resource": "message",
+        "operation": "send",
+        "sendTo": "={{ $env.MAIL_TO }}",
+        "subject": "={{ $json.subject }}",
+        "emailType": "html",
+        "message": "={{ $json.html }}",
+        "options": {
+          "appendAttribution": false
+        }
+      },
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "SELECT_IN_N8N",
+          "name": "Gmail - timesheet check"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000
+    }
+  ],
+  "connections": {
+    "When a run fails": {
+      "main": [
+        [
+          {
+            "node": "Build failure alert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build failure alert": {
+      "main": [
+        [
+          {
+            "node": "Send failure alert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "Asia/Manila"
+  },
+  "pinData": {},
+  "active": false
+}

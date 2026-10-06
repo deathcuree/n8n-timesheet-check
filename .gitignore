@@ -1,0 +1,11 @@
+# planning notes, never published
+.scratch/
+
+# local settings and secrets
+.env
+
+# n8n's local data (credentials database, logs)
+.n8n/
+
+node_modules/
+.DS_Store

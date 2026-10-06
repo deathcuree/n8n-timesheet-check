@@ -1,0 +1,15 @@
+{
+  "name": "n8n-timesheet-check",
+  "version": "0.1.0",
+  "private": true,
+  "description": "n8n workflow that checks a time tracker every morning and reports timesheet exceptions",
+  "scripts": {
+    "test": "node --test \"test/*.test.js\"",
+    "build": "node scripts/build-workflows.js",
+    "import": "node scripts/import-workflows.js",
+    "n8n": "set -a && . ./.env && set +a && N8N_BLOCK_ENV_ACCESS_IN_NODE=false GENERIC_TIMEZONE=Asia/Manila npx -y n8n@2.41.6"
+  },
+  "engines": {
+    "node": ">=24"
+  }
+}

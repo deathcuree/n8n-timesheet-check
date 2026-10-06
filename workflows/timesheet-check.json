@@ -1,0 +1,919 @@
+{
+  "id": "timesheetCheck",
+  "name": "Timesheet check",
+  "nodes": [
+    {
+      "id": "7295a5a6-0da8-4f9c-a67c-858ea06bdd0d",
+      "position": [
+        0,
+        0
+      ],
+      "name": "Every morning at 8:00",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.3,
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "days",
+              "daysInterval": 1,
+              "triggerAtHour": 8,
+              "triggerAtMinute": 0
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "ef843e16-f968-4da1-a905-05fd4147dcfe",
+      "position": [
+        0,
+        180
+      ],
+      "name": "Run by hand",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "parameters": {}
+    },
+    {
+      "id": "ebbeec77-f00c-4f64-a74c-7d0fe5311cb9",
+      "position": [
+        240,
+        0
+      ],
+      "name": "Read run history",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "parameters": {
+        "resource": "sheet",
+        "operation": "read",
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $env.SHEET_ID }}"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "Runs"
+        },
+        "options": {}
+      },
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "SELECT_IN_N8N",
+          "name": "Google Sheets - timesheet check"
+        }
+      },
+      "alwaysOutputData": true,
+      "executeOnce": true,
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 3000
+    },
+    {
+      "id": "ca91688d-1c50-46a4-afa7-b7c00c854cb2",
+      "position": [
+        480,
+        0
+      ],
+      "name": "Work out days to check",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "parameters": {
+        "jsCode": "// Works out which days a run should check.\n//\n// This file has no imports so the same text can be pasted into an n8n Code\n// node unchanged.\n\nconst DAYS_TO_CHECK_DEFAULTS = {\n  // After a gap, look back at most this many days.\n  maxCatchUpDays: 7,\n  timezone: 'Asia/Manila',\n};\n\nfunction shiftDay(day, offset) {\n  const moved = new Date(Date.parse(`${day}T00:00:00.000Z`) + offset * 24 * 60 * 60 * 1000);\n  return moved.toISOString().slice(0, 10);\n}\n\n/**\n * @param lastCoveredDay  the latest day (YYYY-MM-DD) a successful run has\n *                        covered, or null when there is no run history.\n * @param now             the moment of the run.\n * @param settings        overrides for DAYS_TO_CHECK_DEFAULTS.\n * @returns               days (YYYY-MM-DD), oldest first. Every day after the\n *                        last covered day up to yesterday, capped at the most\n *                        recent maxCatchUpDays. Always at least yesterday, so\n *                        a second run on the same day rechecks it.\n */\nfunction daysToCheck(lastCoveredDay, now, settings) {\n  const config = { ...DAYS_TO_CHECK_DEFAULTS, ...settings };\n  const today = new Intl.DateTimeFormat('en-CA', {\n    timeZone: config.timezone,\n    year: 'numeric',\n    month: '2-digit',\n    day: '2-digit',\n  }).format(new Date(now));\n  const yesterday = shiftDay(today, -1);\n\n  if (!lastCoveredDay || lastCoveredDay >= yesterday) return [yesterday];\n\n  const days = [];\n  for (let day = yesterday; day > lastCoveredDay && days.length < config.maxCatchUpDays; day = shiftDay(day, -1)) {\n    days.unshift(day);\n  }\n  return days;\n}\n\n/**\n * @param runRows  the rows of the run-history tab, each with a `days_covered`\n *                 text such as \"2026-10-01, 2026-10-02\".\n * @returns        the latest day any successful run covered, or null.\n */\nfunction lastCoveredDay(runRows) {\n  let latest = null;\n  for (const row of runRows) {\n    const days = typeof row.days_covered === 'string' ? row.days_covered.match(/\\d{4}-\\d{2}-\\d{2}/g) : null;\n    for (const day of days ?? []) {\n      if (latest === null || day > latest) latest = day;\n    }\n  }\n  return latest;\n}\n\n// Lets the tests load this file; has no effect inside an n8n Code node.\nif (typeof module !== 'undefined' && module.exports) {\n  module.exports = { daysToCheck, lastCoveredDay, DAYS_TO_CHECK_DEFAULTS };\n}\n\n// ---- n8n glue: reads this node's input and returns its output ----\nconst now = new Date();\nconst days = daysToCheck(lastCoveredDay($input.all().map((item) => item.json)), now);\n// The time tracker stores each day as midnight in Manila (UTC+8).\nconst startOfDay = (day) => new Date(day + 'T00:00:00+08:00').toISOString();\nreturn [\n  {\n    json: {\n      runAt: now.toISOString(),\n      days,\n      startDate: startOfDay(days[0]),\n      endDate: startOfDay(days[days.length - 1]),\n    },\n  },\n];\n"
+      }
+    },
+    {
+      "id": "5b5faca3-8a3d-4a30-af75-b8a98f7d3cfa",
+      "position": [
+        720,
+        0
+      ],
+      "name": "Log in",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.TIME_TRACKER_API_URL }}/auth/login",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpCustomAuth",
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true
+            }
+          }
+        }
+      },
+      "credentials": {
+        "httpCustomAuth": {
+          "id": "SELECT_IN_N8N",
+          "name": "Time tracker read-only login"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "id": "b43e7572-064c-4dd4-a29f-9cec674218eb",
+      "position": [
+        960,
+        0
+      ],
+      "name": "Check login",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "parameters": {
+        "jsCode": "// Checks that each time tracker response has the shape the workflow relies on.\n// Each check throws an Error naming the endpoint and the missing field, which\n// stops the run before anything is written or sent.\n//\n// This file has no imports so the same text can be pasted into an n8n Code\n// node unchanged.\n\nfunction isMissing(value) {\n  return value === undefined || value === null;\n}\n\nfunction isObject(value) {\n  return typeof value === 'object' && value !== null && !Array.isArray(value);\n}\n\n// Reads a dotted path such as \"user._id\".\nfunction readPath(object, path) {\n  return path.split('.').reduce((value, part) => (isObject(value) ? value[part] : undefined), object);\n}\n\nfunction requireFields(endpoint, label, object, fields) {\n  for (const field of fields) {\n    if (isMissing(readPath(object, field))) {\n      throw new Error(`${endpoint} response: ${label} is missing \"${field}\"`);\n    }\n  }\n}\n\nfunction requirePage(endpoint, body, paginationFields, itemFields) {\n  if (!isObject(body) || !Array.isArray(body.items)) {\n    throw new Error(`${endpoint} response: missing the \"items\" list`);\n  }\n  if (!isObject(body.pagination)) {\n    throw new Error(`${endpoint} response: missing \"pagination\"`);\n  }\n  for (const field of paginationFields) {\n    if (typeof body.pagination[field] !== 'number') {\n      throw new Error(`${endpoint} response: missing \"pagination.${field}\"`);\n    }\n  }\n  body.items.forEach((item, index) => requireFields(endpoint, `item ${index + 1}`, item, itemFields));\n}\n\n// POST /api/auth/login. The account must be read-only, so the workflow never\n// runs with a login that could change anything.\nfunction checkLogin(body) {\n  if (!isObject(body) || body.success !== true) {\n    throw new Error('Login response: \"success\" is not true');\n  }\n  if (!isObject(body.data) || !isObject(body.data.user)) {\n    throw new Error('Login response: missing \"data.user\"');\n  }\n  const role = body.data.user.role;\n  if (role !== 'readonly') {\n    throw new Error(`Login response: the account's role is \"${role}\", but it must be \"readonly\"`);\n  }\n}\n\n// GET /api/admin/time/logs. clockOut is not required: it is null on an open entry.\nfunction checkTimeLogs(body) {\n  requirePage(\n    'Time logs',\n    body,\n    ['total', 'page', 'pages'],\n    ['_id', 'user', 'user._id', 'date', 'clockIn', 'hours', 'breakHours', 'status'],\n  );\n}\n\n// GET /api/pto/all\nfunction checkPtoRequests(body) {\n  requirePage(\n    'PTO requests',\n    body,\n    ['currentPage', 'totalPages', 'totalItems', 'itemsPerPage'],\n    ['_id', 'date', 'hours', 'status', 'createdAt', 'userId', 'userId._id'],\n  );\n}\n\n// GET /api/admin/users\nfunction checkUsers(body) {\n  if (!Array.isArray(body)) {\n    throw new Error('Users response: expected a list of users');\n  }\n  if (body.length === 0) {\n    throw new Error('Users response: the list is empty');\n  }\n  body.forEach((user, index) =>\n    requireFields('Users', `item ${index + 1}`, user, ['_id', 'firstName', 'lastName', 'email', 'role', 'createdAt']),\n  );\n}\n\n// Lets the tests load this file; has no effect inside an n8n Code node.\nif (typeof module !== 'undefined' && module.exports) {\n  module.exports = { checkLogin, checkTimeLogs, checkPtoRequests, checkUsers };\n}\n\n// ---- n8n glue: reads this node's input and returns its output ----\nconst response = $input.first().json;\ncheckLogin(response.body);\nconst cookies = [].concat((response.headers ?? {})['set-cookie'] ?? []);\nconst token = cookies.map((cookie) => String(cookie).split(';')[0]).find((cookie) => cookie.startsWith('token='));\nif (!token) {\n  throw new Error('Login response: no \"token\" cookie was set');\n}\nreturn [{ json: { cookie: token } }];\n"
+      }
+    },
+    {
+      "id": "1b4da39b-6ad1-4017-aaf1-bb446062320e",
+      "position": [
+        0,
+        260
+      ],
+      "name": "Get time logs",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $env.TIME_TRACKER_API_URL }}/admin/time/logs",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "startDate",
+              "value": "={{ $('Work out days to check').first().json.startDate }}"
+            },
+            {
+              "name": "endDate",
+              "value": "={{ $('Work out days to check').first().json.endDate }}"
+            },
+            {
+              "name": "limit",
+              "value": "100"
+            }
+          ]
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Cookie",
+              "value": "={{ $('Check login').first().json.cookie }}"
+            }
+          ]
+        },
+        "options": {
+          "pagination": {
+            "pagination": {
+              "paginationMode": "updateAParameterInEachRequest",
+              "parameters": {
+                "parameters": [
+                  {
+                    "type": "qs",
+                    "name": "page",
+                    "value": "={{ $pageCount + 1 }}"
+                  }
+                ]
+              },
+              "paginationCompleteWhen": "other",
+              "completeExpression": "={{ !$response.body.pagination || $response.body.pagination.page >= $response.body.pagination.pages }}",
+              "limitPagesFetched": true,
+              "maxRequests": 50
+            }
+          }
+        }
+      },
+      "executeOnce": true,
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 3000
+    },
+    {
+      "id": "5614b11a-1e04-4ec9-ac76-4d0dc0ed0671",
+      "position": [
+        240,
+        260
+      ],
+      "name": "Get open entries",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $env.TIME_TRACKER_API_URL }}/admin/time/logs",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "status",
+              "value": "active"
+            },
+            {
+              "name": "limit",
+              "value": "100"
+            }
+          ]
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Cookie",
+              "value": "={{ $('Check login').first().json.cookie }}"
+            }
+          ]
+        },
+        "options": {
+          "pagination": {
+            "pagination": {
+              "paginationMode": "updateAParameterInEachRequest",
+              "parameters": {
+                "parameters": [
+                  {
+                    "type": "qs",
+                    "name": "page",
+                    "value": "={{ $pageCount + 1 }}"
+                  }
+                ]
+              },
+              "paginationCompleteWhen": "other",
+              "completeExpression": "={{ !$response.body.pagination || $response.body.pagination.page >= $response.body.pagination.pages }}",
+              "limitPagesFetched": true,
+              "maxRequests": 50
+            }
+          }
+        }
+      },
+      "executeOnce": true,
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 3000
+    },
+    {
+      "id": "d7a8c2d2-eb90-433c-a299-9fb518f0f4d7",
+      "position": [
+        480,
+        260
+      ],
+      "name": "Get PTO requests",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $env.TIME_TRACKER_API_URL }}/pto/all",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "limit",
+              "value": "100"
+            }
+          ]
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Cookie",
+              "value": "={{ $('Check login').first().json.cookie }}"
+            }
+          ]
+        },
+        "options": {
+          "pagination": {
+            "pagination": {
+              "paginationMode": "updateAParameterInEachRequest",
+              "parameters": {
+                "parameters": [
+                  {
+                    "type": "qs",
+                    "name": "page",
+                    "value": "={{ $pageCount + 1 }}"
+                  }
+                ]
+              },
+              "paginationCompleteWhen": "other",
+              "completeExpression": "={{ !$response.body.pagination || $response.body.pagination.currentPage >= $response.body.pagination.totalPages }}",
+              "limitPagesFetched": true,
+              "maxRequests": 50
+            }
+          }
+        }
+      },
+      "executeOnce": true,
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 3000
+    },
+    {
+      "id": "1c3a261b-cec3-4e89-aed2-b0f96b6b7502",
+      "position": [
+        720,
+        260
+      ],
+      "name": "Get users",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $env.TIME_TRACKER_API_URL }}/admin/users",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Cookie",
+              "value": "={{ $('Check login').first().json.cookie }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "executeOnce": true,
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 3000,
+      "alwaysOutputData": true
+    },
+    {
+      "id": "037c0c2c-1833-4dc8-a114-716f47ebfd83",
+      "position": [
+        960,
+        260
+      ],
+      "name": "Find exceptions",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "parameters": {
+        "jsCode": "// Settings. Anything left out keeps the default from DEFAULT_SETTINGS below.\nconst SETTINGS = {\n  // Dates (YYYY-MM-DD) nobody is expected to work, besides weekends.\n  holidays: [],\n};\n\n// Checks that each time tracker response has the shape the workflow relies on.\n// Each check throws an Error naming the endpoint and the missing field, which\n// stops the run before anything is written or sent.\n//\n// This file has no imports so the same text can be pasted into an n8n Code\n// node unchanged.\n\nfunction isMissing(value) {\n  return value === undefined || value === null;\n}\n\nfunction isObject(value) {\n  return typeof value === 'object' && value !== null && !Array.isArray(value);\n}\n\n// Reads a dotted path such as \"user._id\".\nfunction readPath(object, path) {\n  return path.split('.').reduce((value, part) => (isObject(value) ? value[part] : undefined), object);\n}\n\nfunction requireFields(endpoint, label, object, fields) {\n  for (const field of fields) {\n    if (isMissing(readPath(object, field))) {\n      throw new Error(`${endpoint} response: ${label} is missing \"${field}\"`);\n    }\n  }\n}\n\nfunction requirePage(endpoint, body, paginationFields, itemFields) {\n  if (!isObject(body) || !Array.isArray(body.items)) {\n    throw new Error(`${endpoint} response: missing the \"items\" list`);\n  }\n  if (!isObject(body.pagination)) {\n    throw new Error(`${endpoint} response: missing \"pagination\"`);\n  }\n  for (const field of paginationFields) {\n    if (typeof body.pagination[field] !== 'number') {\n      throw new Error(`${endpoint} response: missing \"pagination.${field}\"`);\n    }\n  }\n  body.items.forEach((item, index) => requireFields(endpoint, `item ${index + 1}`, item, itemFields));\n}\n\n// POST /api/auth/login. The account must be read-only, so the workflow never\n// runs with a login that could change anything.\nfunction checkLogin(body) {\n  if (!isObject(body) || body.success !== true) {\n    throw new Error('Login response: \"success\" is not true');\n  }\n  if (!isObject(body.data) || !isObject(body.data.user)) {\n    throw new Error('Login response: missing \"data.user\"');\n  }\n  const role = body.data.user.role;\n  if (role !== 'readonly') {\n    throw new Error(`Login response: the account's role is \"${role}\", but it must be \"readonly\"`);\n  }\n}\n\n// GET /api/admin/time/logs. clockOut is not required: it is null on an open entry.\nfunction checkTimeLogs(body) {\n  requirePage(\n    'Time logs',\n    body,\n    ['total', 'page', 'pages'],\n    ['_id', 'user', 'user._id', 'date', 'clockIn', 'hours', 'breakHours', 'status'],\n  );\n}\n\n// GET /api/pto/all\nfunction checkPtoRequests(body) {\n  requirePage(\n    'PTO requests',\n    body,\n    ['currentPage', 'totalPages', 'totalItems', 'itemsPerPage'],\n    ['_id', 'date', 'hours', 'status', 'createdAt', 'userId', 'userId._id'],\n  );\n}\n\n// GET /api/admin/users\nfunction checkUsers(body) {\n  if (!Array.isArray(body)) {\n    throw new Error('Users response: expected a list of users');\n  }\n  if (body.length === 0) {\n    throw new Error('Users response: the list is empty');\n  }\n  body.forEach((user, index) =>\n    requireFields('Users', `item ${index + 1}`, user, ['_id', 'firstName', 'lastName', 'email', 'role', 'createdAt']),\n  );\n}\n\n// Lets the tests load this file; has no effect inside an n8n Code node.\nif (typeof module !== 'undefined' && module.exports) {\n  module.exports = { checkLogin, checkTimeLogs, checkPtoRequests, checkUsers };\n}\n\n// Finds timesheet exceptions in data read from the time tracker.\n//\n// This file has no imports so the same text can be pasted into an n8n Code\n// node unchanged. Everything is a plain function of its arguments: nothing\n// here reads the clock, the network or n8n.\n\nconst DEFAULT_SETTINGS = {\n  // A completed entry with more worked hours than this is a long shift.\n  maxWorkedHours: 10,\n  // A completed entry with more break hours than this is a long pause.\n  maxPauseHours: 2,\n  // A PTO request still pending after this many days is flagged.\n  ptoPendingDays: 3,\n  // Approved PTO hours on a day that count as the whole day off.\n  fullDayPtoHours: 8,\n  // Dates (YYYY-MM-DD) nobody is expected to work, besides weekends.\n  holidays: [],\n  timezone: 'Asia/Manila',\n};\n\nconst DAY_MS = 24 * 60 * 60 * 1000;\n\n// Calendar date (YYYY-MM-DD) of a moment, as seen in the given timezone.\nfunction localDay(value, timezone) {\n  return new Intl.DateTimeFormat('en-CA', {\n    timeZone: timezone,\n    year: 'numeric',\n    month: '2-digit',\n    day: '2-digit',\n  }).format(new Date(value));\n}\n\n// Clock time (HH:MM, 24-hour) of a moment, as seen in the given timezone.\nfunction localTime(value, timezone) {\n  return new Intl.DateTimeFormat('en-GB', {\n    timeZone: timezone,\n    hour: '2-digit',\n    minute: '2-digit',\n    hour12: false,\n  }).format(new Date(value));\n}\n\nfunction isWorkday(day, settings) {\n  const weekday = new Date(`${day}T00:00:00.000Z`).getUTCDay();\n  return weekday !== 0 && weekday !== 6 && !settings.holidays.includes(day);\n}\n\n// The key that identifies an exception in the Sheet, so a rerun adds no duplicates.\nfunction exceptionKey(type, id, day) {\n  if (type === 'no_entries_at_all') return `${type}|${day}`;\n  if (type === 'pto_pending') return `${type}|${id}`;\n  return `${type}|${id}|${day}`;\n}\n\nfunction fullName(person) {\n  return `${person.firstName ?? ''} ${person.lastName ?? ''}`.trim();\n}\n\nfunction hoursText(hours) {\n  return `${hours} ${hours === 1 ? 'hour' : 'hours'}`;\n}\n\n/**\n * @param data      { daysToCheck, entries, openEntries, users, ptoRequests }\n *                  in the shapes the time tracker API returns them.\n * @param settings  overrides for DEFAULT_SETTINGS.\n * @param now       the moment of the run.\n * @returns         a list of { key, type, day, userId, person, email, detail }.\n */\nfunction findExceptions(data, settings, now) {\n  const config = { ...DEFAULT_SETTINGS, ...settings };\n  const tz = config.timezone;\n  const today = localDay(now, tz);\n  const daysToCheck = data.daysToCheck ?? [];\n  const exceptions = [];\n\n  const add = (type, day, person, id, detail) => {\n    exceptions.push({\n      key: exceptionKey(type, id, day),\n      type,\n      day,\n      userId: person ? String(person._id) : null,\n      person: person ? fullName(person) : '',\n      email: person ? (person.email ?? '') : '',\n      detail,\n    });\n  };\n\n  // Missed clock-outs: any entry still open from a day before today.\n  // An open entry is never also a long shift or pause, since its hours are still counting.\n  const seenOpen = new Set();\n  for (const entry of data.openEntries ?? []) {\n    if (entry.clockOut || seenOpen.has(String(entry._id))) continue;\n    seenOpen.add(String(entry._id));\n    const day = localDay(entry.date, tz);\n    if (day >= today) continue;\n    add(\n      'missed_clock_out',\n      day,\n      entry.user,\n      entry.user._id,\n      `Clocked in at ${localTime(entry.clockIn, tz)} and never clocked out`,\n    );\n  }\n\n  // Long shifts and long pauses on completed entries, and who was present each day.\n  const presentByDay = new Map(daysToCheck.map((day) => [day, new Set()]));\n  const markPresent = (entry) => {\n    const present = presentByDay.get(localDay(entry.date, tz));\n    if (present) present.add(String(entry.user._id));\n  };\n  (data.openEntries ?? []).forEach(markPresent);\n\n  for (const entry of data.entries ?? []) {\n    markPresent(entry);\n    const day = localDay(entry.date, tz);\n    if (!presentByDay.has(day) || entry.status !== 'completed') continue;\n    if (entry.hours > config.maxWorkedHours) {\n      add(\n        'long_shift',\n        day,\n        entry.user,\n        entry.user._id,\n        `Worked ${hoursText(entry.hours)} (limit ${config.maxWorkedHours})`,\n      );\n    }\n    if (entry.breakHours > config.maxPauseHours) {\n      add(\n        'long_pause',\n        day,\n        entry.user,\n        entry.user._id,\n        `Paused ${hoursText(entry.breakHours)} (limit ${config.maxPauseHours})`,\n      );\n    }\n  }\n\n  // Approved PTO hours per person per day.\n  const ptoRequests = data.ptoRequests ?? [];\n  const requesterId = (request) => String(request.userId?._id ?? request.userId);\n  const approvedHours = new Map();\n  for (const request of ptoRequests) {\n    if (request.status !== 'approved') continue;\n    const slot = `${requesterId(request)}|${localDay(request.date, tz)}`;\n    approvedHours.set(slot, (approvedHours.get(slot) ?? 0) + Number(request.hours));\n  }\n\n  // Missing entries on workdays. Only regular users are expected to clock in.\n  const expectedStaff = (data.users ?? []).filter((user) => user.role === 'user');\n  for (const day of daysToCheck) {\n    if (!isWorkday(day, config)) continue;\n    const present = presentByDay.get(day);\n    if (present.size === 0) {\n      // One exception for the day instead of one per person: this usually means\n      // a holiday that is not in the list, or a problem reading the tracker.\n      add('no_entries_at_all', day, null, null, 'Nobody has a time entry on this workday');\n      continue;\n    }\n    for (const user of expectedStaff) {\n      if (present.has(String(user._id))) continue;\n      if (localDay(user.createdAt, tz) > day) continue;\n      const pto = approvedHours.get(`${user._id}|${day}`) ?? 0;\n      if (pto >= config.fullDayPtoHours) continue;\n      const note = pto > 0 ? ` (${pto} approved PTO ${pto === 1 ? 'hour' : 'hours'})` : '';\n      add('no_entry', day, user, user._id, `No time entry and no full-day PTO${note}`);\n    }\n  }\n\n  // PTO requests left pending too long, or still pending after their date.\n  const nowMs = new Date(now).getTime();\n  for (const request of ptoRequests) {\n    if (request.status !== 'pending') continue;\n    const day = localDay(request.date, tz);\n    const madeOn = localDay(request.createdAt, tz);\n    const datePassed = day < today;\n    const waitingTooLong = nowMs - new Date(request.createdAt).getTime() > config.ptoPendingDays * DAY_MS;\n    if (!datePassed && !waitingTooLong) continue;\n    const person = typeof request.userId === 'object' && request.userId ? request.userId : { _id: request.userId };\n    add(\n      'pto_pending',\n      day,\n      person,\n      request._id,\n      `Pending since ${madeOn} for PTO on ${day} (${hoursText(request.hours)})` +\n        (datePassed ? '; the PTO date has passed' : ''),\n    );\n  }\n\n  return exceptions.sort(\n    (a, b) => a.day.localeCompare(b.day) || a.type.localeCompare(b.type) || a.person.localeCompare(b.person),\n  );\n}\n\n// Lets the tests load this file; has no effect inside an n8n Code node.\nif (typeof module !== 'undefined' && module.exports) {\n  module.exports = { findExceptions, exceptionKey, DEFAULT_SETTINGS };\n}\n\n// ---- n8n glue: reads this node's input and returns its output ----\nconst plan = $('Work out days to check').first().json;\nconst pages = (nodeName) => $(nodeName).all().map((item) => item.json);\n\n// Checks every page, joins the items, and makes sure no page went missing.\nconst collect = (nodeName, check, totalOf) => {\n  const bodies = pages(nodeName);\n  bodies.forEach(check);\n  const items = bodies.flatMap((body) => body.items);\n  const expected = totalOf(bodies[bodies.length - 1].pagination);\n  if (items.length !== expected) {\n    throw new Error(nodeName + ': read ' + items.length + ' items but the time tracker reports ' + expected);\n  }\n  return items;\n};\n\nconst entries = collect('Get time logs', checkTimeLogs, (pagination) => pagination.total);\nconst openEntries = collect('Get open entries', checkTimeLogs, (pagination) => pagination.total);\nconst ptoRequests = collect('Get PTO requests', checkPtoRequests, (pagination) => pagination.totalItems);\nconst users = pages('Get users');\ncheckUsers(users);\n\nconst exceptions = findExceptions(\n  { daysToCheck: plan.days, entries, openEntries, users, ptoRequests },\n  SETTINGS,\n  new Date(plan.runAt),\n);\nreturn [{ json: { runAt: plan.runAt, days: plan.days, exceptions } }];\n"
+      }
+    },
+    {
+      "id": "32a2014e-bc90-4e8b-a092-41751b3c3b0f",
+      "position": [
+        0,
+        520
+      ],
+      "name": "Read reported keys",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "parameters": {
+        "resource": "sheet",
+        "operation": "read",
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $env.SHEET_ID }}"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "Exceptions"
+        },
+        "options": {}
+      },
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "SELECT_IN_N8N",
+          "name": "Google Sheets - timesheet check"
+        }
+      },
+      "alwaysOutputData": true,
+      "executeOnce": true,
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 3000
+    },
+    {
+      "id": "f3a2baad-11de-4173-a488-220b717e1dc4",
+      "position": [
+        240,
+        520
+      ],
+      "name": "Prepare report",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "parameters": {
+        "jsCode": "// Turns the exceptions of a run into Sheet rows, a run-history row and the\n// summary email.\n//\n// This file has no imports so the same text can be pasted into an n8n Code\n// node unchanged.\n\nconst TYPE_LABELS = {\n  missed_clock_out: 'Missed clock-out',\n  long_shift: 'Long shift',\n  long_pause: 'Long pause',\n  no_entry: 'No entry',\n  no_entries_at_all: 'No entries at all',\n  pto_pending: 'PTO pending',\n};\n\n// Adds `reportedBefore` to each exception: true when its key is already in the Sheet.\nfunction markReported(exceptions, existingKeys) {\n  const seen = new Set(existingKeys.map(String));\n  return exceptions.map((exception) => ({ ...exception, reportedBefore: seen.has(exception.key) }));\n}\n\n// Rows to append to the Exceptions tab: only exceptions not reported before.\nfunction sheetRows(markedExceptions, foundAt) {\n  return markedExceptions\n    .filter((exception) => !exception.reportedBefore)\n    .map((exception) => ({\n      key: exception.key,\n      found_at: foundAt,\n      day: exception.day,\n      type: exception.type,\n      person: exception.person,\n      email: exception.email,\n      detail: exception.detail,\n    }));\n}\n\n// The row appended to the Runs tab once everything else has succeeded.\nfunction runRow(runAt, days, markedExceptions) {\n  return {\n    run_at: runAt,\n    days_covered: days.join(', '),\n    new_exceptions: markedExceptions.filter((exception) => !exception.reportedBefore).length,\n    total_exceptions: markedExceptions.length,\n  };\n}\n\nfunction escapeHtml(text) {\n  return String(text)\n    .replace(/&/g, '&amp;')\n    .replace(/</g, '&lt;')\n    .replace(/>/g, '&gt;')\n    .replace(/\"/g, '&quot;');\n}\n\n/**\n * @param days            the days this run covered.\n * @param exceptions      exceptions from markReported.\n * @param summary         the checked summary with names restored, or null.\n * @param summaryProblem  why there is no summary, when one was expected.\n * @returns               { subject, html }\n */\nfunction buildEmail({ days, exceptions, summary, summaryProblem }) {\n  const total = exceptions.length;\n  const fresh = exceptions.filter((exception) => !exception.reportedBefore).length;\n  const emptyDays = exceptions.filter((exception) => exception.type === 'no_entries_at_all').map((e) => e.day);\n  const lastDay = days[days.length - 1];\n\n  let subject =\n    total === 0\n      ? `Timesheet check ${lastDay}: nothing to report`\n      : `Timesheet check ${lastDay}: ${total} ${total === 1 ? 'exception' : 'exceptions'} (${fresh} new)`;\n  if (emptyDays.length > 0) {\n    subject = `NO ENTRIES on ${emptyDays.join(', ')} | ${subject}`;\n  }\n\n  const parts = [];\n  parts.push(`<p>Days covered: <b>${days.map(escapeHtml).join(', ')}</b></p>`);\n\n  for (const day of emptyDays) {\n    parts.push(\n      `<p style=\"padding:8px;border:1px solid #c00;color:#c00\"><b>Nobody has a time entry on ${escapeHtml(day)}.</b> ` +\n        'If it was a holiday, add it to the holiday list. If not, check that the time tracker is working.</p>',\n    );\n  }\n\n  if (total === 0) {\n    parts.push('<p>No exceptions were found.</p>');\n    return { subject, html: parts.join('\\n') };\n  }\n\n  if (summary) {\n    parts.push(`<p>${escapeHtml(summary)}</p>`);\n  } else if (summaryProblem) {\n    parts.push(`<p><i>The written summary was unavailable (${escapeHtml(summaryProblem)}). The full list is below.</i></p>`);\n  }\n\n  const cell = 'style=\"padding:4px 10px;border:1px solid #ccc;text-align:left\"';\n  const rows = exceptions.map(\n    (exception) =>\n      `<tr><td ${cell}>${escapeHtml(exception.day)}</td>` +\n      `<td ${cell}>${escapeHtml(TYPE_LABELS[exception.type] ?? exception.type)}</td>` +\n      `<td ${cell}>${escapeHtml(exception.person || 'Everyone')}</td>` +\n      `<td ${cell}>${escapeHtml(exception.detail)}</td>` +\n      `<td ${cell}>${exception.reportedBefore ? 'Reported before' : '<b>New</b>'}</td></tr>`,\n  );\n  parts.push(\n    '<table style=\"border-collapse:collapse\">' +\n      `<tr><th ${cell}>Day</th><th ${cell}>Problem</th><th ${cell}>Person</th><th ${cell}>Detail</th><th ${cell}>Status</th></tr>\\n` +\n      rows.join('\\n') +\n      '\\n</table>',\n  );\n  parts.push(`<p>${total} in total, ${fresh} new since the last report.</p>`);\n\n  return { subject, html: parts.join('\\n') };\n}\n\n// Lets the tests load this file; has no effect inside an n8n Code node.\nif (typeof module !== 'undefined' && module.exports) {\n  module.exports = { markReported, sheetRows, runRow, buildEmail };\n}\n\n// Prepares what is sent to the language model and checks what comes back.\n// The model never sees a name, email address, hours or clock time: each\n// person becomes a placeholder such as \"Person 1\", and the real names are\n// put back afterwards.\n//\n// This file has no imports so the same text can be pasted into an n8n Code\n// node unchanged.\n\nconst MAX_REPLY_LENGTH = 1500;\nconst PLACEHOLDER_PATTERN = /Person (\\d+)/g;\n\n/**\n * @param exceptions  the list returned by findExceptions.\n * @returns           { items, names }. `items` is what goes to the model:\n *                    { placeholder, type, day } only. `names` maps each\n *                    placeholder to the real name and stays in the workflow.\n */\nfunction buildLlmPayload(exceptions) {\n  const placeholderByUser = new Map();\n  const names = {};\n\n  const items = exceptions.map((exception) => {\n    let placeholder = null;\n    if (exception.userId) {\n      if (!placeholderByUser.has(exception.userId)) {\n        const created = `Person ${placeholderByUser.size + 1}`;\n        placeholderByUser.set(exception.userId, created);\n        names[created] = exception.person;\n      }\n      placeholder = placeholderByUser.get(exception.userId);\n    }\n    return { placeholder, type: exception.type, day: exception.day };\n  });\n\n  return { items, names };\n}\n\n/**\n * Decides whether the model's reply can go in the email.\n * @returns  { ok: true } or { ok: false, reason }.\n */\nfunction checkLlmReply(reply, names) {\n  if (typeof reply !== 'string' || reply.trim() === '') {\n    return { ok: false, reason: 'The reply is empty' };\n  }\n  if (reply.length > MAX_REPLY_LENGTH) {\n    return { ok: false, reason: `The reply is longer than ${MAX_REPLY_LENGTH} characters` };\n  }\n  const unknown = (reply.match(PLACEHOLDER_PATTERN) ?? []).find((placeholder) => !(placeholder in names));\n  if (unknown) {\n    return { ok: false, reason: `The reply mentions ${unknown}, which was not sent` };\n  }\n  return { ok: true };\n}\n\n// Swaps each placeholder in an accepted reply for the real name.\nfunction restoreNames(reply, names) {\n  return reply.replace(PLACEHOLDER_PATTERN, (placeholder) => names[placeholder] ?? placeholder);\n}\n\n// Lets the tests load this file; has no effect inside an n8n Code node.\nif (typeof module !== 'undefined' && module.exports) {\n  module.exports = { buildLlmPayload, checkLlmReply, restoreNames, MAX_REPLY_LENGTH };\n}\n\n// ---- n8n glue: reads this node's input and returns its output ----\nconst found = $('Find exceptions').first().json;\nconst existingKeys = $input.all().map((item) => item.json.key).filter(Boolean);\nconst exceptions = markReported(found.exceptions, existingKeys);\nconst payload = buildLlmPayload(exceptions);\nreturn [\n  {\n    json: {\n      runAt: found.runAt,\n      days: found.days,\n      exceptions,\n      newRows: sheetRows(exceptions, found.runAt),\n      // llmItems is all that is sent to the model. names stays here.\n      llmItems: payload.items,\n      names: payload.names,\n      needsSummary: exceptions.length > 0,\n    },\n  },\n];\n"
+      }
+    },
+    {
+      "id": "0dfb03f6-d09b-48ca-a9e6-9a1696c81ab0",
+      "position": [
+        480,
+        520
+      ],
+      "name": "Anything to summarise?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "0944b2a8-0f4f-4dd9-a06a-248b579371ae",
+              "leftValue": "={{ $json.needsSummary }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "1798b7c6-288b-4e4f-a3bf-2f5e07223caf",
+      "position": [
+        720,
+        520
+      ],
+      "name": "Summarise",
+      "type": "@n8n/n8n-nodes-langchain.googleGemini",
+      "typeVersion": 1.2,
+      "parameters": {
+        "resource": "text",
+        "operation": "message",
+        "modelId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "models/gemini-3-flash-preview"
+        },
+        "messages": {
+          "values": [
+            {
+              "content": "={{ \"These are today's timesheet exceptions as JSON. Each has a placeholder for the person (null means the whole team), a type and a day.\\n\\n\" + JSON.stringify($json.llmItems) + \"\\n\\nWrite a summary of at most five sentences for the person who manages the team. Refer to people only by the placeholders given, exactly as written. Do not invent names, hours or reasons. Plain text only.\" }}",
+              "role": "user"
+            }
+          ]
+        },
+        "simplify": true,
+        "jsonOutput": false,
+        "builtInTools": {},
+        "options": {
+          "temperature": 0.2
+        }
+      },
+      "credentials": {
+        "googlePalmApi": {
+          "id": "SELECT_IN_N8N",
+          "name": "Gemini - timesheet check"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "0ed7fdb2-6070-4b3a-ac2c-59d9b2dc0086",
+      "position": [
+        960,
+        520
+      ],
+      "name": "Build email",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "parameters": {
+        "jsCode": "// Prepares what is sent to the language model and checks what comes back.\n// The model never sees a name, email address, hours or clock time: each\n// person becomes a placeholder such as \"Person 1\", and the real names are\n// put back afterwards.\n//\n// This file has no imports so the same text can be pasted into an n8n Code\n// node unchanged.\n\nconst MAX_REPLY_LENGTH = 1500;\nconst PLACEHOLDER_PATTERN = /Person (\\d+)/g;\n\n/**\n * @param exceptions  the list returned by findExceptions.\n * @returns           { items, names }. `items` is what goes to the model:\n *                    { placeholder, type, day } only. `names` maps each\n *                    placeholder to the real name and stays in the workflow.\n */\nfunction buildLlmPayload(exceptions) {\n  const placeholderByUser = new Map();\n  const names = {};\n\n  const items = exceptions.map((exception) => {\n    let placeholder = null;\n    if (exception.userId) {\n      if (!placeholderByUser.has(exception.userId)) {\n        const created = `Person ${placeholderByUser.size + 1}`;\n        placeholderByUser.set(exception.userId, created);\n        names[created] = exception.person;\n      }\n      placeholder = placeholderByUser.get(exception.userId);\n    }\n    return { placeholder, type: exception.type, day: exception.day };\n  });\n\n  return { items, names };\n}\n\n/**\n * Decides whether the model's reply can go in the email.\n * @returns  { ok: true } or { ok: false, reason }.\n */\nfunction checkLlmReply(reply, names) {\n  if (typeof reply !== 'string' || reply.trim() === '') {\n    return { ok: false, reason: 'The reply is empty' };\n  }\n  if (reply.length > MAX_REPLY_LENGTH) {\n    return { ok: false, reason: `The reply is longer than ${MAX_REPLY_LENGTH} characters` };\n  }\n  const unknown = (reply.match(PLACEHOLDER_PATTERN) ?? []).find((placeholder) => !(placeholder in names));\n  if (unknown) {\n    return { ok: false, reason: `The reply mentions ${unknown}, which was not sent` };\n  }\n  return { ok: true };\n}\n\n// Swaps each placeholder in an accepted reply for the real name.\nfunction restoreNames(reply, names) {\n  return reply.replace(PLACEHOLDER_PATTERN, (placeholder) => names[placeholder] ?? placeholder);\n}\n\n// Lets the tests load this file; has no effect inside an n8n Code node.\nif (typeof module !== 'undefined' && module.exports) {\n  module.exports = { buildLlmPayload, checkLlmReply, restoreNames, MAX_REPLY_LENGTH };\n}\n\n// Turns the exceptions of a run into Sheet rows, a run-history row and the\n// summary email.\n//\n// This file has no imports so the same text can be pasted into an n8n Code\n// node unchanged.\n\nconst TYPE_LABELS = {\n  missed_clock_out: 'Missed clock-out',\n  long_shift: 'Long shift',\n  long_pause: 'Long pause',\n  no_entry: 'No entry',\n  no_entries_at_all: 'No entries at all',\n  pto_pending: 'PTO pending',\n};\n\n// Adds `reportedBefore` to each exception: true when its key is already in the Sheet.\nfunction markReported(exceptions, existingKeys) {\n  const seen = new Set(existingKeys.map(String));\n  return exceptions.map((exception) => ({ ...exception, reportedBefore: seen.has(exception.key) }));\n}\n\n// Rows to append to the Exceptions tab: only exceptions not reported before.\nfunction sheetRows(markedExceptions, foundAt) {\n  return markedExceptions\n    .filter((exception) => !exception.reportedBefore)\n    .map((exception) => ({\n      key: exception.key,\n      found_at: foundAt,\n      day: exception.day,\n      type: exception.type,\n      person: exception.person,\n      email: exception.email,\n      detail: exception.detail,\n    }));\n}\n\n// The row appended to the Runs tab once everything else has succeeded.\nfunction runRow(runAt, days, markedExceptions) {\n  return {\n    run_at: runAt,\n    days_covered: days.join(', '),\n    new_exceptions: markedExceptions.filter((exception) => !exception.reportedBefore).length,\n    total_exceptions: markedExceptions.length,\n  };\n}\n\nfunction escapeHtml(text) {\n  return String(text)\n    .replace(/&/g, '&amp;')\n    .replace(/</g, '&lt;')\n    .replace(/>/g, '&gt;')\n    .replace(/\"/g, '&quot;');\n}\n\n/**\n * @param days            the days this run covered.\n * @param exceptions      exceptions from markReported.\n * @param summary         the checked summary with names restored, or null.\n * @param summaryProblem  why there is no summary, when one was expected.\n * @returns               { subject, html }\n */\nfunction buildEmail({ days, exceptions, summary, summaryProblem }) {\n  const total = exceptions.length;\n  const fresh = exceptions.filter((exception) => !exception.reportedBefore).length;\n  const emptyDays = exceptions.filter((exception) => exception.type === 'no_entries_at_all').map((e) => e.day);\n  const lastDay = days[days.length - 1];\n\n  let subject =\n    total === 0\n      ? `Timesheet check ${lastDay}: nothing to report`\n      : `Timesheet check ${lastDay}: ${total} ${total === 1 ? 'exception' : 'exceptions'} (${fresh} new)`;\n  if (emptyDays.length > 0) {\n    subject = `NO ENTRIES on ${emptyDays.join(', ')} | ${subject}`;\n  }\n\n  const parts = [];\n  parts.push(`<p>Days covered: <b>${days.map(escapeHtml).join(', ')}</b></p>`);\n\n  for (const day of emptyDays) {\n    parts.push(\n      `<p style=\"padding:8px;border:1px solid #c00;color:#c00\"><b>Nobody has a time entry on ${escapeHtml(day)}.</b> ` +\n        'If it was a holiday, add it to the holiday list. If not, check that the time tracker is working.</p>',\n    );\n  }\n\n  if (total === 0) {\n    parts.push('<p>No exceptions were found.</p>');\n    return { subject, html: parts.join('\\n') };\n  }\n\n  if (summary) {\n    parts.push(`<p>${escapeHtml(summary)}</p>`);\n  } else if (summaryProblem) {\n    parts.push(`<p><i>The written summary was unavailable (${escapeHtml(summaryProblem)}). The full list is below.</i></p>`);\n  }\n\n  const cell = 'style=\"padding:4px 10px;border:1px solid #ccc;text-align:left\"';\n  const rows = exceptions.map(\n    (exception) =>\n      `<tr><td ${cell}>${escapeHtml(exception.day)}</td>` +\n      `<td ${cell}>${escapeHtml(TYPE_LABELS[exception.type] ?? exception.type)}</td>` +\n      `<td ${cell}>${escapeHtml(exception.person || 'Everyone')}</td>` +\n      `<td ${cell}>${escapeHtml(exception.detail)}</td>` +\n      `<td ${cell}>${exception.reportedBefore ? 'Reported before' : '<b>New</b>'}</td></tr>`,\n  );\n  parts.push(\n    '<table style=\"border-collapse:collapse\">' +\n      `<tr><th ${cell}>Day</th><th ${cell}>Problem</th><th ${cell}>Person</th><th ${cell}>Detail</th><th ${cell}>Status</th></tr>\\n` +\n      rows.join('\\n') +\n      '\\n</table>',\n  );\n  parts.push(`<p>${total} in total, ${fresh} new since the last report.</p>`);\n\n  return { subject, html: parts.join('\\n') };\n}\n\n// Lets the tests load this file; has no effect inside an n8n Code node.\nif (typeof module !== 'undefined' && module.exports) {\n  module.exports = { markReported, sheetRows, runRow, buildEmail };\n}\n\n// ---- n8n glue: reads this node's input and returns its output ----\nconst report = $('Prepare report').first().json;\nlet summary = null;\nlet summaryProblem = null;\nif (report.needsSummary) {\n  const reply = $('Summarise').isExecuted ? ($('Summarise').first() ?? {}).json ?? {} : {};\n  const parts = reply.content && Array.isArray(reply.content.parts) ? reply.content.parts : [];\n  const text = parts.map((part) => part.text ?? '').join('').trim();\n  const verdict = reply.error ? { ok: false, reason: 'the model could not be reached' } : checkLlmReply(text, report.names);\n  if (verdict.ok) {\n    summary = restoreNames(text, report.names);\n  } else {\n    summaryProblem = verdict.reason;\n  }\n}\nconst email = buildEmail({ days: report.days, exceptions: report.exceptions, summary, summaryProblem });\nreturn [\n  {\n    json: {\n      subject: email.subject,\n      html: email.html,\n      summaryUsed: summary !== null,\n      summaryProblem,\n      newRows: report.newRows,\n      runRow: runRow(report.runAt, report.days, report.exceptions),\n    },\n  },\n];\n"
+      }
+    },
+    {
+      "id": "f372186d-8980-4640-a64b-cb9379c86282",
+      "position": [
+        0,
+        780
+      ],
+      "name": "Any new rows?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "3820ac78-c35d-41c9-ac56-75d773585777",
+              "leftValue": "={{ $json.newRows.length }}",
+              "rightValue": 0,
+              "operator": {
+                "type": "number",
+                "operation": "gt"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "68601989-557b-417e-a310-4e5895703b8e",
+      "position": [
+        240,
+        780
+      ],
+      "name": "One item per new row",
+      "type": "n8n-nodes-base.splitOut",
+      "typeVersion": 1,
+      "parameters": {
+        "fieldToSplitOut": "newRows",
+        "options": {}
+      }
+    },
+    {
+      "id": "13453933-0d3a-4f26-a03f-423a75181e8d",
+      "position": [
+        480,
+        780
+      ],
+      "name": "Append exceptions",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "parameters": {
+        "resource": "sheet",
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $env.SHEET_ID }}"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "Exceptions"
+        },
+        "columns": {
+          "mappingMode": "autoMapInputData",
+          "value": {},
+          "matchingColumns": [],
+          "schema": []
+        },
+        "options": {
+          "cellFormat": "RAW",
+          "handlingExtraData": "error"
+        }
+      },
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "SELECT_IN_N8N",
+          "name": "Google Sheets - timesheet check"
+        }
+      }
+    },
+    {
+      "id": "7c2e0d2b-c277-4a56-a7ce-e9af0c3fa0eb",
+      "position": [
+        720,
+        780
+      ],
+      "name": "Send summary",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.2,
+      "parameters": {
+        "resource": "message",
+        "operation": "send",
+        "sendTo": "={{ $env.MAIL_TO }}",
+        "subject": "={{ $('Build email').first().json.subject }}",
+        "emailType": "html",
+        "message": "={{ $('Build email').first().json.html }}",
+        "options": {
+          "appendAttribution": false
+        }
+      },
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "SELECT_IN_N8N",
+          "name": "Gmail - timesheet check"
+        }
+      },
+      "executeOnce": true,
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000
+    },
+    {
+      "id": "f7649e4e-d874-469c-aab7-89fe16daa65c",
+      "position": [
+        960,
+        780
+      ],
+      "name": "Run history row",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "parameters": {
+        "jsCode": "// ---- n8n glue: reads this node's input and returns its output ----\nreturn [{ json: $('Build email').first().json.runRow }];\n"
+      }
+    },
+    {
+      "id": "3d9dafe7-924a-4413-ad66-e3cc7b4fcce7",
+      "position": [
+        1200,
+        780
+      ],
+      "name": "Append run",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "parameters": {
+        "resource": "sheet",
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $env.SHEET_ID }}"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "Runs"
+        },
+        "columns": {
+          "mappingMode": "autoMapInputData",
+          "value": {},
+          "matchingColumns": [],
+          "schema": []
+        },
+        "options": {
+          "cellFormat": "RAW",
+          "handlingExtraData": "error"
+        }
+      },
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "SELECT_IN_N8N",
+          "name": "Google Sheets - timesheet check"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Every morning at 8:00": {
+      "main": [
+        [
+          {
+            "node": "Read run history",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Run by hand": {
+      "main": [
+        [
+          {
+            "node": "Read run history",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read run history": {
+      "main": [
+        [
+          {
+            "node": "Work out days to check",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Work out days to check": {
+      "main": [
+        [
+          {
+            "node": "Log in",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Log in": {
+      "main": [
+        [
+          {
+            "node": "Check login",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check login": {
+      "main": [
+        [
+          {
+            "node": "Get time logs",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get time logs": {
+      "main": [
+        [
+          {
+            "node": "Get open entries",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get open entries": {
+      "main": [
+        [
+          {
+            "node": "Get PTO requests",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get PTO requests": {
+      "main": [
+        [
+          {
+            "node": "Get users",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get users": {
+      "main": [
+        [
+          {
+            "node": "Find exceptions",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Find exceptions": {
+      "main": [
+        [
+          {
+            "node": "Read reported keys",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read reported keys": {
+      "main": [
+        [
+          {
+            "node": "Prepare report",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare report": {
+      "main": [
+        [
+          {
+            "node": "Anything to summarise?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Anything to summarise?": {
+      "main": [
+        [
+          {
+            "node": "Summarise",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Build email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Summarise": {
+      "main": [
+        [
+          {
+            "node": "Build email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build email": {
+      "main": [
+        [
+          {
+            "node": "Any new rows?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Any new rows?": {
+      "main": [
+        [
+          {
+            "node": "One item per new row",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Send summary",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "One item per new row": {
+      "main": [
+        [
+          {
+            "node": "Append exceptions",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Append exceptions": {
+      "main": [
+        [
+          {
+            "node": "Send summary",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send summary": {
+      "main": [
+        [
+          {
+            "node": "Run history row",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Run history row": {
+      "main": [
+        [
+          {
+            "node": "Append run",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "Asia/Manila",
+    "errorWorkflow": "timesheetCheckFailureAlert"
+  },
+  "pinData": {},
+  "active": false
+}
