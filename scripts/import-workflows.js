@@ -73,7 +73,7 @@ async function n8nIsRunning() {
 
 async function main() {
   if (await n8nIsRunning()) {
-    throw new Error('n8n is running. Stop it first (Ctrl+C in its terminal), run this again, then start it with "npm run n8n".');
+    throw new Error('n8n is running. Stop it first (Ctrl+C in its terminal, or "npm run autostart:remove"), run this again, then start it again.');
   }
 
   const work = fs.mkdtempSync(path.join(os.tmpdir(), 'timesheet-check-'));
